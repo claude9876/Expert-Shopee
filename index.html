@@ -53,8 +53,8 @@ th{color:var(--mute);font-weight:600;cursor:pointer}td.n,th.n{text-align:right}
 </header>
 <main>
   <section>
-    <h2>1. Pilih dua file Excel dari Shopee</h2>
-    <label class="drop" id="drop" for="pick">Tarik file ke sini atau ketuk untuk memilih<br><small>Income (sudah dilepas) dan Order (completed), format .xlsx</small></label>
+    <h2>1. Pilih file Excel dari Shopee</h2>
+    <label class="drop" id="drop" for="pick">Tarik file ke sini atau ketuk untuk memilih<br><small>Income (sudah dilepas) dan Order (completed), format .xlsx. File Order batal/retur boleh ditambahkan sebagai file ketiga.</small></label>
     <input id="pick" type="file" accept=".xlsx,.xls" multiple class="hide">
     <div class="files" id="files"></div>
     <div class="row" style="margin-top:10px"><button id="install" class="alt hide">Pasang aplikasi</button><span class="note" id="err"></span></div>
@@ -78,8 +78,15 @@ th{color:var(--mute);font-weight:600;cursor:pointer}td.n,th.n{text-align:right}
       <div><h2>Provinsi teratas</h2><div id="b-prov"></div></div>
       <div><h2>Opsi pengiriman</h2><div id="b-ship"></div></div>
     </section>
+    <section id="gsec" class="hide">
+      <h2>5. Pesanan batal dan retur</h2>
+      <div class="kpis" id="gk"></div>
+      <div class="row" style="margin-top:10px"><label>Biaya per paket gagal kirim (perkiraan, ubah sesuai tagihan Anda) <input class="hpp" id="failShip" type="number" min="0" inputmode="numeric"></label></div>
+      <div class="grid2"><div><b>Alasan</b><div id="g-al"></div></div><div><b>Variasi</b><div id="g-var"></div></div><div><b>Provinsi (COD gagal)</b><div id="g-prov"></div></div></div>
+      <p class="note">Kerugian = jumlah paket yang sudah dikirim lalu gagal x biaya per paket, ditambah ongkos kirim retur yang tercatat di file. Ini perkiraan, bukan angka tagihan Shopee. Nilai barang yang kembali ke stok tidak dihitung sebagai rugi.</p>
+    </section>
     <section>
-      <h2>5. Detail pesanan</h2>
+      <h2>6. Detail pesanan</h2>
       <div class="row">
         <input id="q" type="search" placeholder="Cari nomor pesanan atau variasi">
         <select id="st"><option value="">Semua status</option><option>Dilepas</option><option>Belum dilepas</option><option>Hanya di Income</option></select>
@@ -107,10 +114,14 @@ function table(rs,key){const h=rs.findIndex(r=>r.includes(key));if(h<0)return nu
 const sum=(a,f)=>a.reduce((s,x)=>s+f(x),0);
 
 /* ---------- ANALISIS ---------- */
+function kindOf(wb){const T=table(rows(wb,'orders'),'No. Pesanan');if(!T)return'selesai';
+  if(/cancel|batal|return|retur/i.test(wb.__name||''))return'batal';
+  const i=T.col('Status Pesanan');if(i<0)return'selesai';
+  const n=T.rows.filter(r=>/selesai|completed/i.test(String(r[i]))).length;return n<T.rows.length/2?'batal':'selesai'}
 function analyze(wbs){
-  let inc=null,ord=null;
+  let inc=null,ord=null,bad=null;
   for(const wb of wbs){const n=wb.SheetNames.map(s=>s.toLowerCase());
-    if(n.includes('penghasilan'))inc=wb;else if(n.includes('orders'))ord=wb}
+    if(n.includes('penghasilan'))inc=wb;else if(n.includes('orders')){kindOf(wb)==='batal'?bad=wb:ord=wb}}
   if(!inc||!ord)throw new Error('Butuh dua file: Income (ada sheet "Penghasilan") dan Order (ada sheet "orders").');
   // Summary Shopee
   const S={};for(const r of rows(inc,'Summary')){if(r[0])S[String(r[0]).trim()]=r[3]!==''?r[3]:r[1]}
@@ -127,7 +138,7 @@ function analyze(wbs){
   for(const r of orderRows){const no=String(r[c('No. Pesanan')]);if(I.has(no)){dupInc++;continue}
     const e={no,harga:g(r,'Harga Produk'),refund:g(r,'Jumlah Pengembalian Dana ke Pembeli'),total:g(r,'Total Penghasilan'),
       fee:sum(feeCols,n=>g(r,n)),ship:sum(shipCols,n=>g(r,n)),vou:sum(vouCols,n=>g(r,n)),
-      tglLepas:dstr(r[c('Tanggal Dana Dilepaskan')]),dibuat:dstr(r[c('Waktu Pesanan Dibuat')])};
+      tglLepas:dstr(r[c('Tanggal Dana Dilepaskan')]),dibuat:dstr(r[c('Waktu Pesanan Dibuat')]),paid:g(r,'Ongkos Kirim yang Dibayarkan ke Jasa Kirim')};
     e.fees={};feeCols.forEach(n=>e.fees[n]=g(r,n));
     if(Math.abs(e.harga+e.refund+e.fee+e.ship+e.vou-e.total)>1)komponenSalah++;
     I.set(no,e)}
@@ -145,6 +156,20 @@ function analyze(wbs){
     const qty=num(og(r,'Jumlah'))-num(og(r,'Returned quantity'));
     OR.get(no).items.push({v:String(og(r,'Nama Variasi')||'(tanpa variasi)'),qty,sub:num(og(r,'Subtotal Pesanan'))})}
   OR.forEach(o=>{o.sub=sum(o.items,i=>i.sub)});
+  let G=null;
+  if(bad){const B=table(rows(bad,'orders'),'No. Pesanan');
+    if(B){const bg=(r,n)=>{const i=B.col(n);return i<0?'':r[i]},M=new Map();
+      for(const r of B.rows){const no=String(bg(r,'No. Pesanan'));if(!no)continue;
+        if(!M.has(no)){const st=String(bg(r,'Status Pesanan')),sp=String(bg(r,'Status Pembatalan/ Pengembalian')),al=String(bg(r,'Alasan Pembatalan')||bg(r,'Alasan Pengembalian')||'');
+          M.set(no,{no,status:st,alasan:(al||sp||st||'(tanpa alasan)').trim(),retur:/retur|return|pengembalian|refund/i.test(st+' '+sp),
+            kirim:!!String(bg(r,'No. Resi')).trim(),cod:/cod/i.test(String(bg(r,'Metode Pembayaran'))),
+            prov:String(bg(r,'Provinsi')||'-'),dibuat:dstr(bg(r,'Waktu Pesanan Dibuat')),returShip:num(bg(r,'Ongkos Kirim Pengembalian Barang')),items:[]})}
+        M.get(no).items.push({v:String(bg(r,'Nama Variasi')||'(tanpa variasi)'),sub:num(bg(r,'Subtotal Pesanan'))})}
+      const list=[...M.values()].filter(o=>!OR.has(o.no));
+      list.forEach(o=>{o.sub=sum(o.items,i=>i.sub);o.varian=[...new Set(o.items.map(i=>i.v))].join(' + ')});
+      G={list,dobel:M.size-list.length,n:list.length,batal:list.filter(o=>!o.retur).length,retur:list.filter(o=>o.retur).length,
+        kirimGagal:list.filter(o=>o.kirim).length,codBad:list.filter(o=>o.cod).length,codOK:[...OR.values()].filter(o=>/cod/i.test(o.bayar)).length,
+        returShip:sum(list,o=>Math.abs(o.returShip)),sub:sum(list,o=>o.sub)}}}
   // Gabung
   const all=[];let hargaBeda=0;
   for(const no of new Set([...OR.keys(),...I.keys()])){const o=OR.get(no),i=I.get(no);
@@ -171,9 +196,11 @@ function analyze(wbs){
   const tanpaOrder=all.filter(x=>x.status==='Hanya di Income').length;
   if(tanpaOrder)K.push({ok:null,t:`${tanpaOrder} pesanan ada di Income tetapi tidak di file Order`,d:'Dibuat sebelum periode Order. Dana tetap dihitung; variasi dihitung 1 pcs tanpa nama.'});
   if(pen.length)K.push({ok:null,t:`${pen.length} pesanan berstatus Selesai tetapi dananya belum dilepas`,d:'Tidak dihitung dalam hasil akhir. Lihat perkiraan terpisah di bawah.'});
+  if(G&&G.dobel)K.push({ok:false,t:`${G.dobel} pesanan muncul di file Order completed dan file batal/retur`,d:'Pesanan itu dihitung sebagai selesai dan dikeluarkan dari hitungan batal/retur.'});
+  if(!G)K.push({ok:null,t:'File pesanan batal/retur belum diunggah',d:'Tambahkan ekspor Order cancelled/returned dari Seller Centre agar kerugian gagal kirim ikut dihitung.'});
   const nonSelesai=[...OR.values()].filter(o=>o.status&&o.status!=='Selesai').length;
   if(nonSelesai)K.push({ok:false,t:`${nonSelesai} pesanan di file Order bukan berstatus Selesai`,d:'Periksa status di tabel detail.'});
-  return{ref,all,T,K,fk,ratio,orders:OR.size,released:I.size}}
+  return{ref,all,T,K,fk,ratio,G,avgShip:Math.round(Math.abs(sum([...I.values()],x=>x.paid))/Math.max(I.size,1)),orders:OR.size,released:I.size}}
 
 /* ---------- TAMPILAN ---------- */
 let D=null,sortK='dibuat',sortD=-1;
@@ -194,21 +221,29 @@ function render(){
   $('#hppDef').value=LS('hppDef')??'';$('#extra').value=LS('extra')??'';
   $('#vt').innerHTML='<tr><th>Variasi</th><th class="n">Pcs dilepas</th><th class="n">Pcs belum</th><th class="n">HPP/pcs</th><th class="n">Total HPP</th></tr>'+
     Object.entries(V).sort((a,b)=>b[1].rel-a[1].rel).map(([n,v])=>`<tr><td>${esc(n)}</td><td class="n">${v.rel}</td><td class="n">${v.pen}</td><td class="n"><input class="hpp" data-v="${esc(n)}" type="number" min="0" inputmode="numeric" placeholder="default" value="${hv[n]??''}"></td><td class="n" data-t="${esc(n)}"></td></tr>`).join('');
-  profit();
+  gagal();profit();
   const by=(f,flt)=>all.filter(flt||(()=>1)).reduce((m,x)=>(m[f(x)]=(m[f(x)]||0)+1,m),{});
   const dd={};all.filter(x=>x.tglLepas).forEach(x=>dd[x.tglLepas]=(dd[x.tglLepas]||0)+x.dana);
   const dk=Object.keys(dd).sort(),mx=Math.max(...Object.values(dd),1);
   $('#days').innerHTML=dk.map(d=>`<div title="${d}: ${rp(dd[d])}" style="height:${dd[d]/mx*100}%"></div>`).join('');
   bars('#b-pay',by(x=>x.bayar));bars('#b-prov',by(x=>x.prov),8);bars('#b-ship',by(x=>x.kirim));
   table_();$('#out').classList.remove('hide')}
+function failLoss(){if(!D.G)return 0;const v=$('#failShip').value,per=v===''?D.avgShip:num(v);return D.G.kirimGagal*per+D.G.returShip}
+function cnt(a,f){return a.reduce((m,x)=>(m[f(x)]=(m[f(x)]||0)+1,m),{})}
+function gagal(){const G=D.G,sec=$('#gsec');if(!G){sec.classList.add('hide');return}
+  sec.classList.remove('hide');if($('#failShip').value==='')$('#failShip').value=LS('failShip')??D.avgShip;SV('failShip',$('#failShip').value);
+  const tot=D.orders+G.n,cod=G.codOK+G.codBad,k=(l,v,m)=>`<div class="k ${m?'main':''}"><small>${l}</small><b>${v}</b></div>`;
+  $('#gk').innerHTML=k('Pesanan batal/retur',G.n,1)+k('Batal',G.batal)+k('Retur',G.retur)+k('Sudah dikirim lalu gagal',G.kirimGagal)+
+    k('Tingkat gagal (semua pesanan)',(G.n/tot*100).toFixed(1)+'%')+k('Tingkat gagal COD',cod?(G.codBad/cod*100).toFixed(1)+'%':'-')+k('Nilai pesanan gagal',rp(G.sub))+k('Perkiraan kerugian ongkir',rp(failLoss()));
+  bars('#g-al',cnt(G.list,o=>o.alasan),6);bars('#g-var',cnt(G.list,o=>o.varian));bars('#g-prov',cnt(G.list.filter(o=>o.cod),o=>o.prov),6)}
 function profit(){
   const def=num($('#hppDef').value),ex=num($('#extra').value),hv={};
   document.querySelectorAll('[data-v]').forEach(i=>{if(i.value!=='')hv[i.dataset.v]=num(i.value)});
   SV('hppDef',$('#hppDef').value);SV('extra',$('#extra').value);SV('hppVar',hv);
   let hpp=0;for(const[n,v]of Object.entries(D.V)){const t=v.rel*(hv[n]??def);hpp+=t;const c=document.querySelector(`[data-t="${CSS.escape(n)}"]`);if(c)c.textContent=rp(t)}
-  const lb=D.T.dana-hpp,ln=lb-ex,k=(l,v,m)=>`<div class="k ${m?'main':''}"><small>${l}</small><b>${v}</b></div>`;
-  D.laba={hpp,ex,lb,ln};
-  $('#profit').innerHTML=k('Dana dilepas',rp(D.T.dana))+k('Total HPP',rp(-hpp))+k('Biaya lain',rp(-ex))+k('Laba bersih',rp(ln),1)+k('Laba per pcs',D.T.pcsRel?rp(ln/D.T.pcsRel):'-')+k('Margin dari harga produk',D.T.harga?(ln/D.T.harga*100).toFixed(1)+'%':'-')}
+  const ls=failLoss(),lb=D.T.dana-hpp,ln=lb-ex-ls,k=(l,v,m)=>`<div class="k ${m?'main':''}"><small>${l}</small><b>${v}</b></div>`;
+  D.laba={hpp,ex,lb,ln,ls};
+  $('#profit').innerHTML=k('Dana dilepas',rp(D.T.dana))+k('Total HPP',rp(-hpp))+k('Biaya lain',rp(-ex))+(D.G?k('Kerugian gagal kirim (perkiraan)',rp(-ls)):'')+k('Laba bersih',rp(ln),1)+k('Laba per pcs',D.T.pcsRel?rp(ln/D.T.pcsRel):'-')+k('Margin dari harga produk',D.T.harga?(ln/D.T.harga*100).toFixed(1)+'%':'-')}
 function table_(){
   const q=$('#q').value.toLowerCase(),s=$('#st').value;
   let a=D.all.filter(x=>(!s||x.status===s)&&(!q||(x.no+' '+x.varian).toLowerCase().includes(q)));
@@ -219,18 +254,19 @@ function table_(){
     `<tr><th colspan="4">Total ${a.length} pesanan</th><th class="n">${rp(sum(a,x=>x.harga))}</th><th class="n">${rp(sum(a,x=>x.dana))}</th><th class="n">${rp(sum(a,x=>x.biaya))}</th><th colspan="2"></th></tr>`}
 function exportXlsx(){
   const{T,all,ref,laba,V}=D,wb=XLSX.utils.book_new(),A=XLSX.utils.aoa_to_sheet;
-  XLSX.utils.book_append_sheet(wb,A([['Ringkasan Hasil Akhir'],['Periode',ref.dari+' s/d '+ref.ke],[],['Dana dilepas (final)',T.dana],['Pesanan dilepas',D.released],['Pcs terjual (dilepas)',T.pcsRel],['Harga produk',T.harga],['Voucher penjual',T.vou],['Total biaya Shopee',T.biaya],['Ongkir bersih',T.ongkir],['Pengembalian dana',T.refund],['Total HPP',-laba.hpp],['Biaya lain',-laba.ex],['Laba bersih',laba.ln],[],['Belum dilepas: jumlah pesanan',all.filter(x=>x.status==='Belum dilepas').length],['Belum dilepas: harga produk',T.hargaPen],['Perkiraan dana belum dilepas (bukan final)',Math.round(T.estPen)]]),'Ringkasan');
+  XLSX.utils.book_append_sheet(wb,A([['Ringkasan Hasil Akhir'],['Periode',ref.dari+' s/d '+ref.ke],[],['Dana dilepas (final)',T.dana],['Pesanan dilepas',D.released],['Pcs terjual (dilepas)',T.pcsRel],['Harga produk',T.harga],['Voucher penjual',T.vou],['Total biaya Shopee',T.biaya],['Ongkir bersih',T.ongkir],['Pengembalian dana',T.refund],['Total HPP',-laba.hpp],['Biaya lain',-laba.ex],['Kerugian gagal kirim (perkiraan)',-laba.ls],['Laba bersih',laba.ln],[],['Belum dilepas: jumlah pesanan',all.filter(x=>x.status==='Belum dilepas').length],['Belum dilepas: harga produk',T.hargaPen],['Perkiraan dana belum dilepas (bukan final)',Math.round(T.estPen)]]),'Ringkasan');
   XLSX.utils.book_append_sheet(wb,A([['No. Pesanan','Dibuat','Variasi','Pembayaran','Pengiriman','Provinsi','Harga','Dana dilepas','Biaya','Ongkir bersih','Status','Tgl dilepas'],...all.map(x=>[x.no,x.dibuat,x.varian,x.bayar,x.kirim,x.prov,x.harga,x.dana,x.biaya,x.ongkirNet,x.status,x.tglLepas])]),'Detail Pesanan');
   XLSX.utils.book_append_sheet(wb,A([['Variasi','Pcs dilepas','Pcs belum dilepas'],...Object.entries(V).map(([n,v])=>[n,v.rel,v.pen])]),'Per Variasi');
   const dd={};all.filter(x=>x.tglLepas).forEach(x=>dd[x.tglLepas]=(dd[x.tglLepas]||0)+x.dana);
   XLSX.utils.book_append_sheet(wb,A([['Tanggal dilepas','Dana'],...Object.keys(dd).sort().map(d=>[d,dd[d]])]),'Harian');
+  if(D.G)XLSX.utils.book_append_sheet(wb,A([['No. Pesanan','Dibuat','Jenis','Alasan/Status','Variasi','COD','Sudah dikirim','Provinsi','Nilai'],...D.G.list.map(o=>[o.no,o.dibuat,o.retur?'Retur':'Batal',o.alasan,o.varian,o.cod?'Ya':'Tidak',o.kirim?'Ya':'Tidak',o.prov,o.sub])]),'Batal & Retur');
   XLSX.writeFile(wb,'hasil-olah-shopee.xlsx')}
 
 /* ---------- EVENT ---------- */
 const files={};
 async function load(list){
   $('#err').textContent='';
-  try{for(const f of list){const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});files[f.name]=wb}
+  try{for(const f of list){const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});wb.__name=f.name;files[f.name]=wb}
     const names=Object.keys(files);$('#files').innerHTML=names.map(n=>`<span class="chip ok">${esc(n)}</span>`).join('');
     const wbs=Object.values(files);
     if(wbs.some(w=>w.SheetNames.map(s=>s.toLowerCase()).includes('penghasilan'))&&wbs.some(w=>w.SheetNames.map(s=>s.toLowerCase()).includes('orders'))){D=analyze(wbs);render()}
@@ -240,7 +276,7 @@ $('#pick').onchange=e=>load(e.target.files);
 const dz=$('#drop');
 dz.ondragover=e=>{e.preventDefault();dz.classList.add('on')};dz.ondragleave=()=>dz.classList.remove('on');
 dz.ondrop=e=>{e.preventDefault();dz.classList.remove('on');load(e.dataTransfer.files)};
-document.addEventListener('input',e=>{if(!D)return;if(e.target.matches('#hppDef,#extra,[data-v]'))profit();if(e.target.matches('#q'))table_()});
+document.addEventListener('input',e=>{if(!D)return;if(e.target.matches('#failShip')){gagal();profit()}else if(e.target.matches('#hppDef,#extra,[data-v]'))profit();if(e.target.matches('#q'))table_()});
 $('#st').onchange=()=>table_();$('#exp').onclick=exportXlsx;
 document.addEventListener('click',e=>{const h=e.target.closest('th[data-s]');if(h&&D){sortD=sortK===h.dataset.s?-sortD:1;sortK=h.dataset.s;table_()}});
 let ip;addEventListener('beforeinstallprompt',e=>{e.preventDefault();ip=e;$('#install').classList.remove('hide')});
